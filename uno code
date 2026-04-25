@@ -1,0 +1,157 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClient.h>
+#include <SoftwareSerial.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+#define BUZZER 15  
+SoftwareSerial rdmSerial(D7, D8); 
+U8X8_SH1106_128X64_NONAME_HW_I2C u8x8(U8X8_PIN_NONE);
+
+const char *ssid = "Virus";
+const char *password = "01511689464";
+const char *device_token = "06db8b8e6fd754f8";
+String URL = "http://meals.punorpath.com/getdata.php";
+
+String OldCardID = "";
+unsigned long cardTimer = 0;
+
+void setup() {
+  Serial.begin(115200);
+  rdmSerial.begin(9600);
+  pinMode(BUZZER, OUTPUT);
+  digitalWrite(BUZZER, LOW);
+  Wire.begin(4, 5); 
+  u8x8.begin();
+  u8x8.setFont(u8x8_font_chroma48medium8_r);
+  connectToWiFi();
+}
+
+void loop() {
+  if(WiFi.status() != WL_CONNECTED) connectToWiFi();
+
+  if (rdmSerial.available() > 0) {
+    if (rdmSerial.read() == 0x02) { 
+      String CardID = "";
+      while (CardID.length() < 12) {
+        if (rdmSerial.available() > 0) {
+          char c = rdmSerial.read();
+          if (c == 0x03) break;
+          CardID += c;
+        }
+      }
+
+      if(CardID.length() >= 10) { 
+        if(CardID != OldCardID || (millis() - cardTimer > 5000)){
+          OldCardID = CardID;
+          cardTimer = millis();
+          
+          u8x8.clearDisplay();
+          u8x8.drawString(0, 3, "  VERIFYING...  ");
+          handleRequest(CardID);
+          
+          while(rdmSerial.available() > 0) rdmSerial.read(); 
+        }
+      }
+    }
+  }
+}
+
+void handleRequest(String id) {
+  WiFiClient client;
+  HTTPClient http;
+  String Link = URL + "?card_uid=" + id + "&device_token=" + device_token;
+  
+  if (http.begin(client, Link)) {
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+      String payload = http.getString();
+      payload.trim();
+
+      // ১. এনরোলমেন্ট সাকসেস (Enrollment Mode)
+      if (payload.indexOf("enroll:Success") >= 0) {
+        successBeep();
+        u8x8.clearDisplay();
+        u8x8.drawString(0, 1, "  ENROLLMENT  ");
+        u8x8.drawString(0, 3, "----------------");
+        u8x8.drawString(0, 5, " CARD ADDED!    ");
+        delay(3000);
+      }
+      // ২. এনরোলমেন্ট মোডে অলরেডি রেজিস্টার্ড কার্ড
+      else if (payload.indexOf("already:Registered") >= 0) {
+        errorBeep();
+        u8x8.clearDisplay();
+        u8x8.drawString(0, 2, " CARD ALREADY ");
+        u8x8.drawString(0, 4, " REGISTERED!  ");
+        delay(3000);
+      }
+      // ৩. মিল সাকসেস (Meal/Attendance Mode)
+      else if (payload.indexOf("success") >= 0) {
+        successBeep();
+        int firstColon = payload.indexOf(':');
+        int secondColon = payload.indexOf(':', firstColon + 1);
+        int thirdColon = payload.indexOf(':', secondColon + 1);
+        
+        String name = payload.substring(firstColon + 1, secondColon);
+        String serial = payload.substring(secondColon + 1, (thirdColon == -1 ? payload.length() : thirdColon));
+        String meal = (thirdColon != -1) ? payload.substring(thirdColon + 1) : "Meal";
+
+        u8x8.clearDisplay();
+        u8x8.drawString(0, 0, "  MEAL SERVED!  ");
+        u8x8.drawString(0, 1, "----------------");
+        u8x8.drawString(0, 3, "NAME:");
+        u8x8.drawString(6, 3, name.substring(0, 10).c_str());
+        u8x8.drawString(0, 5, "TYPE:");
+        u8x8.drawString(6, 5, meal.c_str());
+        u8x8.drawString(0, 7, "Roll :");
+        u8x8.drawString(7, 7, serial.c_str());
+        delay(5000);
+      }
+      // ৪. অলরেডি মিল নেওয়া হয়ে থাকলে
+      else if (payload.indexOf("already") >= 0) {
+        errorBeep();
+        u8x8.clearDisplay();
+        u8x8.drawString(0, 2, " ALREADY TAKEN! ");
+        u8x8.drawString(0, 4, "----------------");
+        u8x8.drawString(4, 6, payload.substring(8).c_str());
+        delay(3000);
+      }
+      // ৫. ইনভ্যালিড কার্ড বা অন্য এরর
+      else {
+        errorBeep();
+        u8x8.clearDisplay();
+        u8x8.drawString(0, 3, "  INVALID CARD  ");
+        u8x8.drawString(0, 5, "   TRY AGAIN!   ");
+        delay(3000);
+      }
+    }
+    http.end();
+  }
+  readyScreen();
+}
+
+void connectToWiFi(){
+  WiFi.begin(ssid, password);
+  u8x8.clearDisplay();
+  u8x8.drawString(0, 2, " LINKING WIFI...");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  readyScreen();
+}
+
+void readyScreen() {
+  u8x8.clearDisplay();
+  u8x8.drawString(0, 0, "   SRMS MEALS   ");
+  u8x8.drawString(0, 1, "----------------");
+  u8x8.drawString(0, 4, "  READY TO SCAN ");
+}
+
+void successBeep() {
+  digitalWrite(BUZZER, HIGH); delay(100); digitalWrite(BUZZER, LOW);
+  delay(80);
+  digitalWrite(BUZZER, HIGH); delay(100); digitalWrite(BUZZER, LOW);
+}
+
+void errorBeep() {
+  digitalWrite(BUZZER, HIGH); delay(500); digitalWrite(BUZZER, LOW);
+}
